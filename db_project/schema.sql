@@ -2,12 +2,22 @@ SET client_encoding TO 'UTF8';   -- файл в UTF-8; строка защища
 -- =====================================================================
 -- КАНОНИЧЕСКАЯ СХЕМА БД  (единый источник правды)
 -- Проект: «Перекус» — доставка еды (маркетплейс)
--- Версия: v1 (каноническая, проверена на PostgreSQL 18). Schema freeze — правит только Роль 1.
+-- Версия: v3 (каноническая, проверена на PostgreSQL 18.4). Schema freeze — правит только Роль 1.
+--   v2 (2026-06-10, правки аудита, одобрены командой):
+--     * составной FK «категория блюда — из того же ресторана» (menu_item → menu_category);
+--     * CHECK: percent-скидка промокода не может превышать 100.
+--   v3 (2026-06-10, решения команды по развилкам аудита):
+--     * О13 декларативно: составной FK «адрес доставки — клиента заказа» (decisions.md №8);
+--     * новая сущность order_review — отзыв 0..1 к заказу, покрывает ФТ-12 (decisions.md №9).
+--   v4 (2026-06-10, по замечаниям независимой верификации 2-й моделью, раздел 14):
+--     * Z3: payment.restaurant_id + 2 составных FK — О24 («способ оплаты принимается
+--       рестораном») теперь декларативно, в т.ч. для записи в обход T1;
+--     * Z4: CHECK-инварианты времени и статусов заказа (О22/О23 частично декларативно).
 -- Применение: psql -d perekus -f schema.sql
 -- =====================================================================
 
 -- --- чистый старт (удобно при пересборке) ----------------------------
-DROP TABLE IF EXISTS payment, order_item, customer_order, promo_code,
+DROP TABLE IF EXISTS order_review, payment, order_item, customer_order, promo_code,
     menu_item, menu_category, restaurant_payment_method, restaurant_cuisine,
     cuisine, restaurant, address, courier, customer CASCADE;
 DROP TYPE IF EXISTS order_status, payment_method, payment_status, discount_type CASCADE;
@@ -38,7 +48,9 @@ CREATE TABLE address (
     street       TEXT NOT NULL,
     building     TEXT NOT NULL,
     apartment    TEXT,
-    comment      TEXT
+    comment      TEXT,
+    -- нужно для составного FK из customer_order (О13 «адрес — клиента заказа», v3)
+    UNIQUE (address_id, customer_id)
 );
 
 -- ---------------------------------------------------------------------
@@ -78,19 +90,24 @@ CREATE TABLE menu_category (
     category_id   BIGSERIAL PRIMARY KEY,
     restaurant_id BIGINT NOT NULL REFERENCES restaurant(restaurant_id) ON DELETE CASCADE,
     name          TEXT NOT NULL,
-    UNIQUE (restaurant_id, name)
+    UNIQUE (restaurant_id, name),
+    -- нужно для составного FK из menu_item (ограничение «категория того же ресторана», v2)
+    UNIQUE (category_id, restaurant_id)
 );
 
 CREATE TABLE menu_item (
     item_id       BIGSERIAL PRIMARY KEY,
     restaurant_id BIGINT NOT NULL REFERENCES restaurant(restaurant_id) ON DELETE CASCADE,
-    category_id   BIGINT NOT NULL REFERENCES menu_category(category_id),
+    category_id   BIGINT NOT NULL,
     name          TEXT NOT NULL,
     description   TEXT,
     price         NUMERIC(10,2) NOT NULL CHECK (price >= 0),   -- ТЕКУЩАЯ цена
     is_available  BOOLEAN NOT NULL DEFAULT true,
     -- нужно для составного FK из order_item (ограничение «позиции того же ресторана»)
-    UNIQUE (item_id, restaurant_id)
+    UNIQUE (item_id, restaurant_id),
+    -- категория блюда — из того же ресторана (v2; закрывает дыру из аудита 2026-06-10:
+    -- раньше блюдо могло ссылаться на категорию ЧУЖОГО ресторана)
+    FOREIGN KEY (category_id, restaurant_id) REFERENCES menu_category (category_id, restaurant_id)
 );
 
 -- ---------------------------------------------------------------------
@@ -112,7 +129,10 @@ CREATE TABLE promo_code (
     min_order_amount NUMERIC(10,2) NOT NULL DEFAULT 0,
     valid_from       DATE NOT NULL,
     valid_to         DATE NOT NULL,
-    CHECK (valid_to >= valid_from)
+    CHECK (valid_to >= valid_from),
+    -- percent-скидка не может превышать 100 % (v2; дыра из аудита 2026-06-10:
+    -- раньше вставлялся промокод со скидкой 150 %)
+    CHECK (discount_type <> 'percent' OR discount_value <= 100)
 );
 
 -- ---------------------------------------------------------------------
@@ -122,7 +142,7 @@ CREATE TABLE customer_order (
     order_id      BIGSERIAL PRIMARY KEY,
     customer_id   BIGINT NOT NULL REFERENCES customer(customer_id),
     restaurant_id BIGINT NOT NULL REFERENCES restaurant(restaurant_id),
-    address_id    BIGINT NOT NULL REFERENCES address(address_id),
+    address_id    BIGINT NOT NULL,
     courier_id    BIGINT REFERENCES courier(courier_id),       -- NULL до назначения
     promo_id      BIGINT REFERENCES promo_code(promo_id),      -- NULL если без промокода
     status        order_status NOT NULL DEFAULT 'created',
@@ -130,7 +150,10 @@ CREATE TABLE customer_order (
     paid_at       TIMESTAMPTZ,
     delivered_at  TIMESTAMPTZ,
     -- нужно как цель составного FK из order_item
-    UNIQUE (order_id, restaurant_id)
+    UNIQUE (order_id, restaurant_id),
+    -- адрес доставки принадлежит клиенту ЭТОГО заказа (О13, v3 — декларативно;
+    -- закрывает дыру из аудита 2026-06-10: раньше проходил адрес чужого клиента)
+    FOREIGN KEY (address_id, customer_id) REFERENCES address (address_id, customer_id)
 );
 
 CREATE TABLE order_item (
@@ -153,6 +176,17 @@ CREATE TABLE payment (
     method     payment_method NOT NULL,
     status     payment_status NOT NULL DEFAULT 'pending',
     paid_at    TIMESTAMPTZ
+);
+
+-- отзыв клиента о выполненном заказе: 0..1 к заказу (ФТ-12; v3, decisions.md №9).
+-- «Только на доставленный заказ и только клиентом заказа» — процедурно (О26, Q13).
+CREATE TABLE order_review (
+    review_id         BIGSERIAL PRIMARY KEY,
+    order_id          BIGINT NOT NULL UNIQUE REFERENCES customer_order(order_id) ON DELETE CASCADE,
+    restaurant_rating SMALLINT NOT NULL CHECK (restaurant_rating BETWEEN 1 AND 5),
+    courier_rating    SMALLINT CHECK (courier_rating BETWEEN 1 AND 5),  -- NULL: курьера можно не оценивать
+    comment           TEXT,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- ---------------------------------------------------------------------

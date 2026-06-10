@@ -13,6 +13,8 @@
 | `schema.dbml` | Исходник ER-диаграммы для dbdiagram.io (вставить → картинка) — проверен | Роль 1 |
 | `ai_log.md` | Лог диалогов с AI по ходу проекта | пополняют все, курирует Роль 4 |
 | `decisions.md` | Журнал спорных проектных решений | пополняют все, оформляет Роль 4 |
+| `docker-compose.yml` | Воспроизводимое окружение: PostgreSQL 18 + проектные SQL внутри контейнера | Роль 3 |
+| `TODO.md` | Доработки по ролям (итоги аудита 2026-06-10) | вся команда |
 
 ## Роли
 
@@ -30,4 +32,15 @@
 
 ## Окружение
 
-- PostgreSQL (локально или в Docker). Порядок: `psql -f schema.sql` → `psql -f seed.sql` → запросы из `dml.sql`.
+Вариант A — Docker (рекомендуется, версия PG фиксирована):
+
+```bash
+docker compose up -d
+docker compose exec db psql -U perekus -d perekus -f /project/schema.sql
+docker compose exec db psql -U perekus -d perekus -f /project/seed.sql
+docker compose exec db psql -U perekus -d perekus   # консоль для запросов
+```
+
+Вариант B — локальный PostgreSQL: `psql -d perekus -f schema.sql` → `-f seed.sql`.
+
+Запросы из `dml.sql` выполняются **выборочно** (Q1–Q7 и T1/T2 содержат `:param`-плейсхолдеры — задавать через `psql -v name=value`; Q8–Q12 запускаются как есть).

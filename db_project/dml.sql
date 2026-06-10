@@ -1,10 +1,16 @@
 SET client_encoding TO 'UTF8';   -- файл в UTF-8; строка защищает от авто-WIN1252 на Windows
 -- =====================================================================
 -- SQL DML — запросы и транзакции   (проект «Перекус»)
--- Версия: v1 (проверено на PG 18 + seed.sql). Владелец: Роль 3.
--- Применение: psql -d perekus -f dml.sql   (после schema.sql + seed.sql)
--- Для КАЖДОГО запроса: ФТ / Кто / Зачем.  :param — psql-плейсхолдеры.
--- Покрытие: 7 запросов CRUD (Q1–Q7) + 5 сложных (Q8–Q12) + 2 транзакции.
+-- Версия: v1.3 (проверено на PG 18.4 + seed.sql). Владелец: Роль 3.
+--   v1.2 (аудит 2026-06-10, одобрено командой): стражи в Q6 и T2,
+--     Q8 без отменённых заказов, честная инструкция по применению.
+--   v1.3 (решения команды 2026-06-10): Q13/Q14 под ФТ-12 (отзывы),
+--     T1 проверяет О24 (способ оплаты принимается рестораном).
+-- Применение: выполнять запросы ВЫБОРОЧНО после schema.sql + seed.sql.
+--   Файл целиком через `psql -f dml.sql` НЕ пройдёт: :param — psql-плейсхолдеры,
+--   их нужно задавать через `psql -v name=value` (Q8–Q12, Q14 параметров не требуют).
+-- Для КАЖДОГО запроса: ФТ / Кто / Зачем.
+-- Покрытие: 8 запросов CRUD (Q1–Q7, Q13) + 6 сложных (Q8–Q12, Q14) + 2 транзакции.
 -- =====================================================================
 
 -- #####################################################################
@@ -48,15 +54,29 @@ UPDATE menu_item SET price = :new_price WHERE item_id = :item;
 
 -- --- Q6 (UPDATE) Назначить курьера и перевести заказ в доставку ------
 -- ФТ-6 · оператор/курьер · назначение возможно только после оплаты/готовки
+-- [аудит 2026-06-10] добавлен страж courier_id IS NULL (защита от двойного
+-- назначения при гонке двух операторов): раздел 4 документа уже описывал Q6
+-- именно так, код отставал от документа.
 UPDATE customer_order
 SET courier_id = :courier, status = 'on_the_way'
-WHERE order_id = :order AND status IN ('paid', 'cooking');
+WHERE order_id = :order AND status IN ('paid', 'cooking')
+  AND courier_id IS NULL;
 
 -- --- Q7 (DELETE) Удалить НЕиспользуемый адрес клиента ----------------
 -- ФТ-1 · клиент · удаляем адрес только если он не привязан ни к одному заказу
 DELETE FROM address a
 WHERE a.address_id = :addr
   AND NOT EXISTS (SELECT 1 FROM customer_order o WHERE o.address_id = a.address_id);
+
+-- --- Q13 (CREATE) Оставить отзыв на доставленный заказ ---------------
+-- ФТ-12 · клиент · оценить ресторан (обязательно) и курьера (опционально)
+-- [v1.3] стражи: только СВОЙ заказ (:cust) и только 'delivered' (О26);
+-- повторный отзыв отсечёт UNIQUE(order_id) (О25); оценки 1..5 держит CHECK (О27).
+INSERT INTO order_review (order_id, restaurant_rating, courier_rating, comment)
+SELECT o.order_id, :rest_rating, :cour_rating, :'comment'
+FROM customer_order o
+WHERE o.order_id = :order AND o.customer_id = :cust AND o.status = 'delivered'
+RETURNING review_id;
 
 
 -- #####################################################################
@@ -66,12 +86,15 @@ WHERE a.address_id = :addr
 
 -- --- Q8 Топ-5 блюд каждого ресторана по продажам (оконная) ----------
 -- ФТ-10 · ресторан · что лучше всего продаётся
+-- [аудит 2026-06-10, одобрено командой] отменённые заказы исключены:
+-- прежняя версия считала «продажами» и позиции cancelled-заказов.
 SELECT * FROM (
     SELECT r.name AS restaurant, mi.name AS item,
            SUM(oi.quantity) AS sold,
            ROW_NUMBER() OVER (PARTITION BY r.restaurant_id
                               ORDER BY SUM(oi.quantity) DESC) AS rnk
     FROM order_item oi
+    JOIN customer_order o ON o.order_id = oi.order_id AND o.status <> 'cancelled'
     JOIN menu_item mi ON mi.item_id = oi.item_id
     JOIN restaurant r ON r.restaurant_id = mi.restaurant_id
     GROUP BY r.restaurant_id, r.name, mi.item_id, mi.name
@@ -132,6 +155,18 @@ JOIN restaurant r ON r.restaurant_id = o.restaurant_id
 GROUP BY r.restaurant_id, r.name
 ORDER BY cancelled_pct DESC, restaurant;
 
+-- --- Q14 Средний рейтинг ресторанов по отзывам (агрегаты + JOIN) -----
+-- ФТ-12/ФТ-11 · клиент выбирает ресторан, оператор следит за качеством
+-- [v1.3] отзыв привязан к заказу, ресторан получаем через JOIN (decisions.md №9)
+SELECT r.name AS restaurant,
+       ROUND(AVG(rv.restaurant_rating), 2) AS avg_rating,
+       COUNT(*) AS reviews
+FROM order_review rv
+JOIN customer_order o ON o.order_id = rv.order_id
+JOIN restaurant r     ON r.restaurant_id = o.restaurant_id
+GROUP BY r.restaurant_id, r.name
+ORDER BY avg_rating DESC, restaurant;
+
 
 -- #####################################################################
 -- ЧАСТЬ C. Транзакции (раздел 12 документа)
@@ -140,6 +175,7 @@ ORDER BY cancelled_pct DESC, restaurant;
 -- --- T1: Оформление и оплата заказа (атомарно) ----------------------
 -- Объединяем: создание заказа + позиции со снимком цен + оплата + перевод в 'paid'.
 -- Без транзакции: деньги списаны без заказа / заказ без позиций / частичная вставка.
+-- Параметры (psql -v): cust, rest, addr, item1, q1, item2, q2, method.
 BEGIN;
 
 INSERT INTO customer_order (customer_id, restaurant_id, address_id, status)
@@ -153,10 +189,18 @@ FROM menu_item mi
 JOIN (VALUES (:item1, :q1), (:item2, :q2)) AS v(item_id, qty) ON v.item_id = mi.item_id
 WHERE mi.restaurant_id = :rest AND mi.is_available;
 
--- оплата на сумму позиций (промокод/скидку добавить здесь же при наличии)
+-- оплата на сумму позиций (промокод/скидку добавить здесь же при наличии).
+-- [v1.3] О24: способ оплаты должен приниматься рестораном заказа. Если не
+-- принимается (или заказ без позиций — О11), SELECT не даст строк / даст NULL,
+-- INSERT упадёт по NOT NULL(amount) и ВСЯ транзакция откатится:
+-- заказ «paid без оплаты» структурно невозможен.
 INSERT INTO payment (order_id, amount, method, status, paid_at)
-SELECT :order_id, SUM(oi.quantity * oi.unit_price), 'card', 'paid', now()
-FROM order_item oi WHERE oi.order_id = :order_id;
+SELECT :order_id, SUM(oi.quantity * oi.unit_price), :'method'::payment_method, 'paid', now()
+FROM order_item oi
+WHERE oi.order_id = :order_id
+  AND EXISTS (SELECT 1 FROM restaurant_payment_method rpm
+              WHERE rpm.restaurant_id = :rest
+                AND rpm.method = :'method'::payment_method);
 
 UPDATE customer_order SET status = 'paid', paid_at = now() WHERE order_id = :order_id;
 
@@ -164,7 +208,14 @@ COMMIT;
 
 -- --- T2: Отмена оплаченного заказа с возвратом (атомарно) ------------
 -- ФТ-7. Без транзакции: статус 'cancelled', но деньги не возвращены.
+-- [аудит 2026-06-10] добавлены стражи по статусу: О22 разрешает отмену только
+-- НЕзавершённого заказа; прежняя версия молча отменяла и доставленный
+-- (проверено на PG 18.4). Возврат выполняется только если отмена состоялась.
 BEGIN;
-    UPDATE customer_order SET status = 'cancelled' WHERE order_id = :order_id;
-    UPDATE payment SET status = 'refunded' WHERE order_id = :order_id AND status = 'paid';
+    UPDATE customer_order SET status = 'cancelled'
+    WHERE order_id = :order_id AND status NOT IN ('delivered', 'cancelled');
+    UPDATE payment SET status = 'refunded'
+    WHERE order_id = :order_id AND status = 'paid'
+      AND EXISTS (SELECT 1 FROM customer_order o
+                  WHERE o.order_id = :order_id AND o.status = 'cancelled');
 COMMIT;

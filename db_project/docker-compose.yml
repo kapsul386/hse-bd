@@ -1,0 +1,32 @@
+# Воспроизводимое окружение проекта «Перекус»: PostgreSQL 18 (та же мажорная
+# версия, на которой проверены schema.sql / seed.sql / dml.sql).
+#
+# Запуск (из папки db_project):
+#   docker compose up -d
+#   docker compose exec db psql -U perekus -d perekus -f /project/schema.sql
+#   docker compose exec db psql -U perekus -d perekus -f /project/seed.sql
+# Интерактивная консоль для запросов из dml.sql:
+#   docker compose exec db psql -U perekus -d perekus
+# Полный сброс (удалить данные):
+#   docker compose down -v
+services:
+  db:
+    image: postgres:18
+    container_name: perekus-db
+    environment:
+      POSTGRES_USER: perekus
+      POSTGRES_PASSWORD: perekus   # учебный проект; в реальном — из .env
+      POSTGRES_DB: perekus
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - .:/project:ro   # SQL-файлы проекта видны внутри контейнера как /project/*
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U perekus -d perekus"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:

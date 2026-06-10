@@ -4,7 +4,7 @@
 //   1) открой https://dbdiagram.io  →  кнопка "Create new diagram"
 //   2) вставь весь этот текст в левую панель  →  справа появится ER-схема
 //   3) Export → PNG/PDF  (картинка для раздела 5 «Предварительная модель данных»)
-// Соответствует schema.sql (13 таблиц). Держит в синхроне Роль 1.
+// Соответствует schema.sql v3 (14 таблиц). Держит в синхроне Роль 1.
 // =====================================================================
 
 Enum order_status {
@@ -49,6 +49,9 @@ Table address {
   building    text [not null]
   apartment   text
   comment     text
+  indexes {
+    (address_id, customer_id) [unique] // для составного FK из customer_order (О13, v3)
+  }
 }
 
 Table restaurant {
@@ -86,6 +89,7 @@ Table menu_category {
   name          text [not null]
   indexes {
     (restaurant_id, name) [unique]
+    (category_id, restaurant_id) [unique] // для составного FK из menu_item (v2)
   }
 }
 
@@ -114,7 +118,7 @@ Table promo_code {
   promo_id         bigint [pk, increment]
   code             text [not null, unique]
   discount_type    discount_type [not null]
-  discount_value   decimal(10,2) [not null]
+  discount_value   decimal(10,2) [not null, note: 'для percent — не более 100 (CHECK, v2)']
   min_order_amount decimal(10,2) [not null, default: 0]
   valid_from       date [not null]
   valid_to         date [not null]
@@ -157,20 +161,31 @@ Table payment {
   paid_at    timestamptz
 }
 
+Table order_review {
+  review_id         bigint [pk, increment]
+  order_id          bigint [not null, unique, note: '0..1 отзыв на заказ (О25)']
+  restaurant_rating smallint [not null, note: '1..5 (CHECK)']
+  courier_rating    smallint [note: '1..5 или NULL — курьера можно не оценивать']
+  comment           text
+  created_at        timestamptz [not null, default: `now()`]
+  Note: 'Отзыв о выполненном заказе (ФТ-12, v3). Только на delivered — процедурно (О26, Q13).'
+}
+
 // --- связи (внешние ключи) ---
 Ref: address.customer_id > customer.customer_id
 Ref: restaurant_cuisine.restaurant_id > restaurant.restaurant_id
 Ref: restaurant_cuisine.cuisine_id > cuisine.cuisine_id
 Ref: restaurant_payment_method.restaurant_id > restaurant.restaurant_id
 Ref: menu_category.restaurant_id > restaurant.restaurant_id
-Ref: menu_item.category_id > menu_category.category_id
+Ref: menu_item.(category_id, restaurant_id) > menu_category.(category_id, restaurant_id) // v2: категория того же ресторана
 Ref: menu_item.restaurant_id > restaurant.restaurant_id
 Ref: customer_order.customer_id > customer.customer_id
 Ref: customer_order.restaurant_id > restaurant.restaurant_id
-Ref: customer_order.address_id > address.address_id
+Ref: customer_order.(address_id, customer_id) > address.(address_id, customer_id) // v3: адрес — клиента заказа (О13)
 Ref: customer_order.courier_id > courier.courier_id
 Ref: customer_order.promo_id > promo_code.promo_id
 Ref: payment.order_id - customer_order.order_id   // 1:1
+Ref: order_review.order_id - customer_order.order_id // 0..1 отзыв (v3)
 Ref: order_item.(order_id, restaurant_id) > customer_order.(order_id, restaurant_id)
 Ref: order_item.(item_id, restaurant_id) > menu_item.(item_id, restaurant_id)
 
@@ -192,6 +207,7 @@ TableGroup "Заказы и оплата" {
   order_item
   payment
   promo_code
+  order_review
 }
 TableGroup "Логистика" {
   courier

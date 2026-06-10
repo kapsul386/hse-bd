@@ -10,12 +10,13 @@ SET client_encoding TO 'UTF8';   -- файл в UTF-8; строка защища
 --   * заказы за 5 разных дней (нарастающий итог выручки),
 --   * у каждого курьера ≥2 доставки (среднее время доставки),
 --   * у блюд разные объёмы продаж (топ-N по ресторанам),
---   * есть отменённый (refunded) и ещё не доставленный (cooking) заказы.
+--   * есть отменённый (refunded) и ещё не доставленный (cooking) заказы,
+--   * отзывы только на часть доставленных заказов (средний рейтинг, Q14; v3).
 -- ДЕМО СНИМКА ЦЕНЫ: «Маргарита» сейчас стоит 550, но в заказе №1 от 01.06
 --   зафиксирована старая цена 500 — история не искажается при росте цены.
 -- =====================================================================
 
-TRUNCATE payment, order_item, customer_order, promo_code, menu_item,
+TRUNCATE order_review, payment, order_item, customer_order, promo_code, menu_item,
     menu_category, restaurant_payment_method, restaurant_cuisine, cuisine,
     restaurant, address, courier, customer RESTART IDENTITY CASCADE;
 
@@ -127,6 +128,15 @@ INSERT INTO payment (payment_id, order_id, amount, method, status, paid_at) VALU
  (8,8, 870.00,'card','refunded','2026-06-04 21:02'),  -- отменён → возврат
  (9,9,1400.00,'card','paid',    '2026-06-05 11:02');
 
+-- 10b. Отзывы (v3, ФТ-12): только на ДОСТАВЛЕННЫЕ заказы, created_at ≥ delivered_at;
+--      заказ 6 — без оценки курьера (courier_rating NULL допустим).
+INSERT INTO order_review (review_id, order_id, restaurant_rating, courier_rating, comment, created_at) VALUES
+ (1,1,5,5,'Быстро и горячо',  '2026-06-01 13:10'),
+ (2,2,4,4,NULL,               '2026-06-01 14:30'),
+ (3,3,5,4,'Роллы свежие',     '2026-06-02 20:15'),
+ (4,5,3,5,'Бургер остыл',     '2026-06-03 15:20'),
+ (5,6,4,NULL,'Доставка ок',   '2026-06-03 19:40');
+
 COMMIT;
 
 -- 11. Синхронизация последовательностей с явными ID -------------------
@@ -140,6 +150,7 @@ SELECT setval(pg_get_serial_sequence('courier','courier_id'),               (SEL
 SELECT setval(pg_get_serial_sequence('promo_code','promo_id'),              (SELECT MAX(promo_id)      FROM promo_code));
 SELECT setval(pg_get_serial_sequence('customer_order','order_id'),          (SELECT MAX(order_id)      FROM customer_order));
 SELECT setval(pg_get_serial_sequence('payment','payment_id'),               (SELECT MAX(payment_id)    FROM payment));
+SELECT setval(pg_get_serial_sequence('order_review','review_id'),           (SELECT MAX(review_id)     FROM order_review));
 
 -- 12. Быстрая проверка загрузки --------------------------------------
 SELECT 'customer' AS tbl, COUNT(*) FROM customer
@@ -147,4 +158,5 @@ UNION ALL SELECT 'restaurant', COUNT(*) FROM restaurant
 UNION ALL SELECT 'menu_item',  COUNT(*) FROM menu_item
 UNION ALL SELECT 'order',      COUNT(*) FROM customer_order
 UNION ALL SELECT 'order_item', COUNT(*) FROM order_item
-UNION ALL SELECT 'payment',    COUNT(*) FROM payment;
+UNION ALL SELECT 'payment',    COUNT(*) FROM payment
+UNION ALL SELECT 'review',     COUNT(*) FROM order_review;
