@@ -1,0 +1,16 @@
+# OS / редакторы
+desktop.ini
+Thumbs.db
+.DS_Store
+*~
+.idea/
+.vscode/
+
+# Локальные дампы/логи
+*.log
+*.bak
+*.dump
+
+# Секреты/локальные настройки
+.env
+.pgpass

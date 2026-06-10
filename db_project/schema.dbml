@@ -1,0 +1,198 @@
+// =====================================================================
+// ER-диаграмма проекта «Перекус» — формат DBML для dbdiagram.io
+// Как пользоваться:
+//   1) открой https://dbdiagram.io  →  кнопка "Create new diagram"
+//   2) вставь весь этот текст в левую панель  →  справа появится ER-схема
+//   3) Export → PNG/PDF  (картинка для раздела 5 «Предварительная модель данных»)
+// Соответствует schema.sql (13 таблиц). Держит в синхроне Роль 1.
+// =====================================================================
+
+Enum order_status {
+  created
+  paid
+  cooking
+  on_the_way
+  delivered
+  cancelled
+}
+
+Enum payment_method {
+  card
+  cash
+  sbp
+}
+
+Enum payment_status {
+  pending
+  paid
+  refunded
+}
+
+Enum discount_type {
+  percent
+  fixed
+}
+
+Table customer {
+  customer_id bigint [pk, increment]
+  full_name   text [not null]
+  phone       text [not null, unique]
+  email       text
+  created_at  timestamptz [not null, default: `now()`]
+}
+
+Table address {
+  address_id  bigint [pk, increment]
+  customer_id bigint [not null]
+  city        text [not null]
+  street      text [not null]
+  building    text [not null]
+  apartment   text
+  comment     text
+}
+
+Table restaurant {
+  restaurant_id bigint [pk, increment]
+  name          text [not null]
+  phone         text [not null]
+  address_text  text [not null]
+  is_active     boolean [not null, default: true]
+}
+
+Table cuisine {
+  cuisine_id int [pk, increment]
+  name       text [not null, unique]
+}
+
+Table restaurant_cuisine {
+  restaurant_id bigint [not null]
+  cuisine_id    int [not null]
+  indexes {
+    (restaurant_id, cuisine_id) [pk]
+  }
+}
+
+Table restaurant_payment_method {
+  restaurant_id bigint [not null]
+  method        payment_method [not null]
+  indexes {
+    (restaurant_id, method) [pk]
+  }
+}
+
+Table menu_category {
+  category_id   bigint [pk, increment]
+  restaurant_id bigint [not null]
+  name          text [not null]
+  indexes {
+    (restaurant_id, name) [unique]
+  }
+}
+
+Table menu_item {
+  item_id       bigint [pk, increment]
+  restaurant_id bigint [not null, note: 'оставлен намеренно для составного FK (decisions.md №6)']
+  category_id   bigint [not null]
+  name          text [not null]
+  description   text
+  price         decimal(10,2) [not null, note: 'текущая цена']
+  is_available  boolean [not null, default: true]
+  indexes {
+    (item_id, restaurant_id) [unique]
+  }
+}
+
+Table courier {
+  courier_id   bigint [pk, increment]
+  full_name    text [not null]
+  phone        text [not null, unique]
+  vehicle_type text
+  is_active    boolean [not null, default: true]
+}
+
+Table promo_code {
+  promo_id         bigint [pk, increment]
+  code             text [not null, unique]
+  discount_type    discount_type [not null]
+  discount_value   decimal(10,2) [not null]
+  min_order_amount decimal(10,2) [not null, default: 0]
+  valid_from       date [not null]
+  valid_to         date [not null]
+}
+
+Table customer_order {
+  order_id      bigint [pk, increment]
+  customer_id   bigint [not null]
+  restaurant_id bigint [not null]
+  address_id    bigint [not null]
+  courier_id    bigint [note: 'NULL до назначения']
+  promo_id      bigint [note: 'NULL если без промокода']
+  status        order_status [not null, default: 'created']
+  created_at    timestamptz [not null, default: `now()`]
+  paid_at       timestamptz
+  delivered_at  timestamptz
+  indexes {
+    (order_id, restaurant_id) [unique]
+  }
+}
+
+Table order_item {
+  order_id      bigint [not null]
+  item_id       bigint [not null]
+  restaurant_id bigint [not null]
+  quantity      int [not null]
+  unit_price    decimal(10,2) [not null, note: 'СНИМОК цены на момент заказа']
+  indexes {
+    (order_id, item_id) [pk]
+  }
+  Note: 'Ассоциативная таблица заказ↔блюдо (M:N). Составные FK гарантируют: блюдо из ресторана заказа.'
+}
+
+Table payment {
+  payment_id bigint [pk, increment]
+  order_id   bigint [not null, unique]
+  amount     decimal(10,2) [not null]
+  method     payment_method [not null]
+  status     payment_status [not null, default: 'pending']
+  paid_at    timestamptz
+}
+
+// --- связи (внешние ключи) ---
+Ref: address.customer_id > customer.customer_id
+Ref: restaurant_cuisine.restaurant_id > restaurant.restaurant_id
+Ref: restaurant_cuisine.cuisine_id > cuisine.cuisine_id
+Ref: restaurant_payment_method.restaurant_id > restaurant.restaurant_id
+Ref: menu_category.restaurant_id > restaurant.restaurant_id
+Ref: menu_item.category_id > menu_category.category_id
+Ref: menu_item.restaurant_id > restaurant.restaurant_id
+Ref: customer_order.customer_id > customer.customer_id
+Ref: customer_order.restaurant_id > restaurant.restaurant_id
+Ref: customer_order.address_id > address.address_id
+Ref: customer_order.courier_id > courier.courier_id
+Ref: customer_order.promo_id > promo_code.promo_id
+Ref: payment.order_id - customer_order.order_id   // 1:1
+Ref: order_item.(order_id, restaurant_id) > customer_order.(order_id, restaurant_id)
+Ref: order_item.(item_id, restaurant_id) > menu_item.(item_id, restaurant_id)
+
+// --- визуальная группировка ---
+TableGroup "Клиенты" {
+  customer
+  address
+}
+TableGroup "Рестораны и меню" {
+  restaurant
+  cuisine
+  restaurant_cuisine
+  restaurant_payment_method
+  menu_category
+  menu_item
+}
+TableGroup "Заказы и оплата" {
+  customer_order
+  order_item
+  payment
+  promo_code
+}
+TableGroup "Логистика" {
+  courier
+}
