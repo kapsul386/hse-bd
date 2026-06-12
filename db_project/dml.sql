@@ -1,11 +1,13 @@
 SET client_encoding TO 'UTF8';   -- файл в UTF-8; строка защищает от авто-WIN1252 на Windows
 -- =====================================================================
 -- SQL DML — запросы и транзакции   (проект «Перекус»)
--- Версия: v1.3 (проверено на PG 18.4 + seed.sql). Владелец: Роль 3.
+-- Версия: v1.4 (проверено на PG 18.3/18.4 + seed.sql). Владелец: Роль 3.
 --   v1.2 (аудит 2026-06-10, одобрено командой): стражи в Q6 и T2,
 --     Q8 без отменённых заказов, честная инструкция по применению.
 --   v1.3 (решения команды 2026-06-10): Q13/Q14 под ФТ-12 (отзывы),
 --     T1 проверяет О24 (способ оплаты принимается рестораном).
+--   v1.4 (финальная сборка 2026-06-12): T1 считает промокод, проверяет все
+--     запрошенные позиции и пишет payment.restaurant_id для декларативного О24.
 -- Применение: выполнять запросы ВЫБОРОЧНО после schema.sql + seed.sql.
 --   Файл целиком через `psql -f dml.sql` НЕ пройдёт: :param — psql-плейсхолдеры,
 --   их нужно задавать через `psql -v name=value` (Q8–Q12, Q14 параметров не требуют).
@@ -38,14 +40,17 @@ WHERE mi.restaurant_id = :rest AND mi.is_available
 ORDER BY mc.name, mi.name;
 
 -- --- Q4 (READ) История заказов клиента ------------------------------
--- ФТ-8 · клиент · список заказов с суммой и статусом
+-- ФТ-8 · клиент · список заказов со стоимостью позиций, оплатой и статусом
 SELECT o.order_id, o.created_at, r.name AS restaurant, o.status,
-       SUM(oi.quantity * oi.unit_price) AS items_total
+       SUM(oi.quantity * oi.unit_price) AS items_total_before_discount,
+       p.amount AS paid_amount,
+       p.status AS payment_status
 FROM customer_order o
 JOIN restaurant r  ON r.restaurant_id = o.restaurant_id
 JOIN order_item oi ON oi.order_id = o.order_id
+LEFT JOIN payment p ON p.order_id = o.order_id
 WHERE o.customer_id = :cust
-GROUP BY o.order_id, o.created_at, r.name, o.status
+GROUP BY o.order_id, o.created_at, r.name, o.status, p.amount, p.status
 ORDER BY o.created_at DESC;
 
 -- --- Q5 (UPDATE) Изменение цены блюда -------------------------------
@@ -80,7 +85,7 @@ RETURNING review_id;
 
 
 -- #####################################################################
--- ЧАСТЬ B. Сложные запросы — 5 штук
+-- ЧАСТЬ B. Сложные запросы — 6 штук
 -- (JOIN / GROUP BY / подзапросы / агрегаты / оконные функции)
 -- #####################################################################
 
@@ -173,36 +178,91 @@ ORDER BY avg_rating DESC, restaurant;
 -- #####################################################################
 
 -- --- T1: Оформление и оплата заказа (атомарно) ----------------------
--- Объединяем: создание заказа + позиции со снимком цен + оплата + перевод в 'paid'.
--- Без транзакции: деньги списаны без заказа / заказ без позиций / частичная вставка.
--- Параметры (psql -v): cust, rest, addr, item1, q1, item2, q2, method.
+-- Объединяем: создание заказа + позиции со снимком цен + проверку промокода
+-- + оплату + перевод в 'paid'. Без транзакции: деньги списаны без заказа /
+-- заказ без позиций / частичная вставка / сумма не совпадает со скидкой.
+-- Параметры (psql -v): cust, rest, addr, promo_id, item1, q1, item2, q2, method.
+-- Если промокода нет: promo_id=0.
 BEGIN;
 
-INSERT INTO customer_order (customer_id, restaurant_id, address_id, status)
-VALUES (:cust, :rest, :addr, 'created')
+DROP TABLE IF EXISTS tmp_t1_items;
+CREATE TEMP TABLE tmp_t1_items (
+    item_id BIGINT NOT NULL,
+    qty     INT    NOT NULL CHECK (qty > 0)
+) ON COMMIT DROP;
+
+INSERT INTO tmp_t1_items (item_id, qty)
+VALUES (:item1, :q1), (:item2, :q2);
+
+INSERT INTO customer_order (customer_id, restaurant_id, address_id, promo_id, status)
+VALUES (:cust, :rest, :addr, NULLIF(:promo_id, 0), 'created')
 RETURNING order_id \gset
 
 -- позиции: цена берётся из меню СЕЙЧАС и фиксируется как unit_price
 INSERT INTO order_item (order_id, item_id, restaurant_id, quantity, unit_price)
-SELECT :order_id, mi.item_id, mi.restaurant_id, v.qty, mi.price
-FROM menu_item mi
-JOIN (VALUES (:item1, :q1), (:item2, :q2)) AS v(item_id, qty) ON v.item_id = mi.item_id
+SELECT :order_id, mi.item_id, mi.restaurant_id, req.qty, mi.price
+FROM tmp_t1_items req
+JOIN menu_item mi ON mi.item_id = req.item_id
 WHERE mi.restaurant_id = :rest AND mi.is_available;
 
--- оплата на сумму позиций (промокод/скидку добавить здесь же при наличии).
--- [v1.3] О24: способ оплаты должен приниматься рестораном заказа. Если не
--- принимается (или заказ без позиций — О11), SELECT не даст строк / даст NULL,
--- INSERT упадёт по NOT NULL(amount) и ВСЯ транзакция откатится:
--- заказ «paid без оплаты» структурно невозможен.
-INSERT INTO payment (order_id, amount, method, status, paid_at)
-SELECT :order_id, SUM(oi.quantity * oi.unit_price), :'method'::payment_method, 'paid', now()
-FROM order_item oi
-WHERE oi.order_id = :order_id
-  AND EXISTS (SELECT 1 FROM restaurant_payment_method rpm
-              WHERE rpm.restaurant_id = :rest
-                AND rpm.method = :'method'::payment_method);
+-- Если хотя бы одна позиция не вставилась (чужой ресторан / недоступно),
+-- промокод не найден/невалиден/сумма ниже минимума или метод оплаты не
+-- принимается рестораном, amount станет NULL и INSERT упадёт по NOT NULL.
+WITH requested AS (
+    SELECT COUNT(*) AS requested_cnt FROM tmp_t1_items
+),
+inserted AS (
+    SELECT COUNT(*) AS inserted_cnt,
+           COALESCE(SUM(quantity * unit_price), 0)::NUMERIC(10,2) AS items_total
+    FROM order_item
+    WHERE order_id = :order_id
+),
+promo AS (
+    SELECT *
+    FROM promo_code
+    WHERE promo_id = NULLIF(:promo_id, 0)
+),
+calc AS (
+    SELECT CASE
+        WHEN req.requested_cnt = 0 THEN NULL
+        WHEN ins.inserted_cnt <> req.requested_cnt THEN NULL
+        WHEN NOT EXISTS (
+            SELECT 1
+            FROM restaurant_payment_method rpm
+            WHERE rpm.restaurant_id = :rest
+              AND rpm.method = :'method'::payment_method
+        ) THEN NULL
+        WHEN NULLIF(:promo_id, 0) IS NOT NULL AND NOT EXISTS (
+            SELECT 1
+            FROM promo p
+            WHERE current_date BETWEEN p.valid_from AND p.valid_to
+              AND ins.items_total >= p.min_order_amount
+        ) THEN NULL
+        ELSE (
+            ins.items_total - COALESCE((
+                SELECT LEAST(
+                    ins.items_total,
+                    CASE p.discount_type
+                        WHEN 'fixed' THEN p.discount_value
+                        WHEN 'percent' THEN ROUND(ins.items_total * p.discount_value / 100, 2)
+                    END
+                )
+                FROM promo p
+                WHERE current_date BETWEEN p.valid_from AND p.valid_to
+                  AND ins.items_total >= p.min_order_amount
+            ), 0)
+        )::NUMERIC(10,2)
+    END AS amount
+    FROM requested req CROSS JOIN inserted ins
+)
+INSERT INTO payment (order_id, restaurant_id, amount, method, status, paid_at)
+SELECT :order_id, :rest, amount, :'method'::payment_method, 'paid', now()
+FROM calc;
 
-UPDATE customer_order SET status = 'paid', paid_at = now() WHERE order_id = :order_id;
+UPDATE customer_order
+SET status = 'paid',
+    paid_at = (SELECT paid_at FROM payment WHERE order_id = :order_id)
+WHERE order_id = :order_id;
 
 COMMIT;
 

@@ -4,7 +4,7 @@
 //   1) открой https://dbdiagram.io  →  кнопка "Create new diagram"
 //   2) вставь весь этот текст в левую панель  →  справа появится ER-схема
 //   3) Export → PNG/PDF  (картинка для раздела 5 «Предварительная модель данных»)
-// Соответствует schema.sql v3 (14 таблиц). Держит в синхроне Роль 1.
+// Соответствует schema.sql v4 (14 таблиц). Держит в синхроне Роль 1.
 // =====================================================================
 
 Enum order_status {
@@ -50,7 +50,7 @@ Table address {
   apartment   text
   comment     text
   indexes {
-    (address_id, customer_id) [unique] // для составного FK из customer_order (О13, v3)
+    (address_id, customer_id) [unique] // для составного FK из customer_order (О13)
   }
 }
 
@@ -155,10 +155,14 @@ Table order_item {
 Table payment {
   payment_id bigint [pk, increment]
   order_id   bigint [not null, unique]
+  restaurant_id bigint [not null, note: 'для составных FK: заказ того же ресторана + О24']
   amount     decimal(10,2) [not null]
   method     payment_method [not null]
   status     payment_status [not null, default: 'pending']
   paid_at    timestamptz
+  indexes {
+    (status, paid_at)
+  }
 }
 
 Table order_review {
@@ -168,7 +172,7 @@ Table order_review {
   courier_rating    smallint [note: '1..5 или NULL — курьера можно не оценивать']
   comment           text
   created_at        timestamptz [not null, default: `now()`]
-  Note: 'Отзыв о выполненном заказе (ФТ-12, v3). Только на delivered — процедурно (О26, Q13).'
+  Note: 'Отзыв о выполненном заказе (ФТ-12). Только на delivered — процедурно (О26, Q13).'
 }
 
 // --- связи (внешние ключи) ---
@@ -181,11 +185,12 @@ Ref: menu_item.(category_id, restaurant_id) > menu_category.(category_id, restau
 Ref: menu_item.restaurant_id > restaurant.restaurant_id
 Ref: customer_order.customer_id > customer.customer_id
 Ref: customer_order.restaurant_id > restaurant.restaurant_id
-Ref: customer_order.(address_id, customer_id) > address.(address_id, customer_id) // v3: адрес — клиента заказа (О13)
+Ref: customer_order.(address_id, customer_id) > address.(address_id, customer_id) // адрес — клиента заказа (О13)
 Ref: customer_order.courier_id > courier.courier_id
 Ref: customer_order.promo_id > promo_code.promo_id
-Ref: payment.order_id - customer_order.order_id   // 1:1
-Ref: order_review.order_id - customer_order.order_id // 0..1 отзыв (v3)
+Ref: payment.(order_id, restaurant_id) > customer_order.(order_id, restaurant_id) // 1:1 + ресторан заказа
+Ref: payment.(restaurant_id, method) > restaurant_payment_method.(restaurant_id, method) // v4: О24
+Ref: order_review.order_id - customer_order.order_id // 0..1 отзыв
 Ref: order_item.(order_id, restaurant_id) > customer_order.(order_id, restaurant_id)
 Ref: order_item.(item_id, restaurant_id) > menu_item.(item_id, restaurant_id)
 

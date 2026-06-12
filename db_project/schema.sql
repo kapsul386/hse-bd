@@ -2,14 +2,14 @@ SET client_encoding TO 'UTF8';   -- файл в UTF-8; строка защища
 -- =====================================================================
 -- КАНОНИЧЕСКАЯ СХЕМА БД  (единый источник правды)
 -- Проект: «Перекус» — доставка еды (маркетплейс)
--- Версия: v3 (каноническая, проверена на PostgreSQL 18.4). Schema freeze — правит только Роль 1.
+-- Версия: v4 (каноническая, проверена на PostgreSQL 18.3/18.4). Schema freeze — правит только Роль 1.
 --   v2 (2026-06-10, правки аудита, одобрены командой):
 --     * составной FK «категория блюда — из того же ресторана» (menu_item → menu_category);
 --     * CHECK: percent-скидка промокода не может превышать 100.
 --   v3 (2026-06-10, решения команды по развилкам аудита):
 --     * О13 декларативно: составной FK «адрес доставки — клиента заказа» (decisions.md №8);
 --     * новая сущность order_review — отзыв 0..1 к заказу, покрывает ФТ-12 (decisions.md №9).
---   v4 (2026-06-10, по замечаниям независимой верификации 2-й моделью, раздел 14):
+--   v4 (2026-06-12, по замечаниям независимой верификации 2-й моделью, раздел 14):
 --     * Z3: payment.restaurant_id + 2 составных FK — О24 («способ оплаты принимается
 --       рестораном») теперь декларативно, в т.ч. для записи в обход T1;
 --     * Z4: CHECK-инварианты времени и статусов заказа (О22/О23 частично декларативно).
@@ -153,7 +153,21 @@ CREATE TABLE customer_order (
     UNIQUE (order_id, restaurant_id),
     -- адрес доставки принадлежит клиенту ЭТОГО заказа (О13, v3 — декларативно;
     -- закрывает дыру из аудита 2026-06-10: раньше проходил адрес чужого клиента)
-    FOREIGN KEY (address_id, customer_id) REFERENCES address (address_id, customer_id)
+    FOREIGN KEY (address_id, customer_id) REFERENCES address (address_id, customer_id),
+    -- базовые внутристрочные инварианты времени и жизненного цикла (v4)
+    CONSTRAINT chk_order_time_flow CHECK (
+        (paid_at IS NULL OR paid_at >= created_at) AND
+        (delivered_at IS NULL OR (paid_at IS NOT NULL AND delivered_at >= paid_at))
+    ),
+    CONSTRAINT chk_order_status_time CHECK (
+        (status <> 'created' OR paid_at IS NULL) AND
+        (status NOT IN ('paid','cooking','on_the_way','delivered') OR paid_at IS NOT NULL) AND
+        (status <> 'delivered' OR delivered_at IS NOT NULL) AND
+        (status = 'delivered' OR delivered_at IS NULL)
+    ),
+    CONSTRAINT chk_order_courier_status CHECK (
+        courier_id IS NULL OR status IN ('paid','cooking','on_the_way','delivered')
+    )
 );
 
 CREATE TABLE order_item (
@@ -170,12 +184,23 @@ CREATE TABLE order_item (
 );
 
 CREATE TABLE payment (
-    payment_id BIGSERIAL PRIMARY KEY,
-    order_id   BIGINT NOT NULL UNIQUE REFERENCES customer_order(order_id) ON DELETE CASCADE, -- 1:1
-    amount     NUMERIC(10,2) NOT NULL CHECK (amount >= 0),
-    method     payment_method NOT NULL,
-    status     payment_status NOT NULL DEFAULT 'pending',
-    paid_at    TIMESTAMPTZ
+    payment_id    BIGSERIAL PRIMARY KEY,
+    order_id      BIGINT NOT NULL UNIQUE, -- 1:1 с заказом
+    restaurant_id BIGINT NOT NULL,
+    amount        NUMERIC(10,2) NOT NULL CHECK (amount >= 0),
+    method        payment_method NOT NULL,
+    status        payment_status NOT NULL DEFAULT 'pending',
+    paid_at       TIMESTAMPTZ,
+    CONSTRAINT chk_payment_paid_at CHECK (
+        (status = 'pending' AND paid_at IS NULL) OR
+        (status IN ('paid','refunded') AND paid_at IS NOT NULL)
+    ),
+    -- оплата относится к тому же ресторану, что и заказ
+    FOREIGN KEY (order_id, restaurant_id)
+        REFERENCES customer_order(order_id, restaurant_id) ON DELETE CASCADE,
+    -- О24: выбранный способ оплаты должен приниматься рестораном
+    FOREIGN KEY (restaurant_id, method)
+        REFERENCES restaurant_payment_method(restaurant_id, method)
 );
 
 -- отзыв клиента о выполненном заказе: 0..1 к заказу (ФТ-12; v3, decisions.md №9).
@@ -196,5 +221,8 @@ CREATE INDEX idx_order_customer    ON customer_order (customer_id);
 CREATE INDEX idx_order_restaurant  ON customer_order (restaurant_id);
 CREATE INDEX idx_order_courier     ON customer_order (courier_id);
 CREATE INDEX idx_order_created     ON customer_order (created_at);
+CREATE INDEX idx_order_status_rest ON customer_order (status, restaurant_id);
 CREATE INDEX idx_orderitem_item    ON order_item (item_id);
 CREATE INDEX idx_menuitem_rest_cat ON menu_item (restaurant_id, category_id);
+CREATE INDEX idx_address_customer  ON address (customer_id);
+CREATE INDEX idx_payment_status_paid ON payment (status, paid_at);
