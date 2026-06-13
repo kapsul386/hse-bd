@@ -154,6 +154,7 @@ CREATE TABLE customer_order (
     -- адрес доставки принадлежит клиенту ЭТОГО заказа (О13, v3 — декларативно;
     -- закрывает дыру из аудита 2026-06-10: раньше проходил адрес чужого клиента)
     FOREIGN KEY (address_id, customer_id) REFERENCES address (address_id, customer_id),
+<<<<<<< Updated upstream
     -- базовые внутристрочные инварианты времени и жизненного цикла (v4)
     CONSTRAINT chk_order_time_flow CHECK (
         (paid_at IS NULL OR paid_at >= created_at) AND
@@ -168,6 +169,13 @@ CREATE TABLE customer_order (
     CONSTRAINT chk_order_courier_status CHECK (
         courier_id IS NULL OR status IN ('paid','cooking','on_the_way','delivered')
     )
+=======
+    -- v4 (Z4 рецензента): порядок времени и согласованность статусов с метками (О22/О23)
+    CHECK (paid_at IS NULL OR paid_at >= created_at),
+    CHECK (delivered_at IS NULL OR (paid_at IS NOT NULL AND delivered_at >= paid_at)),
+    CHECK (status <> 'paid'      OR paid_at      IS NOT NULL),
+    CHECK (status <> 'delivered' OR delivered_at IS NOT NULL)
+>>>>>>> Stashed changes
 );
 
 CREATE TABLE order_item (
@@ -185,12 +193,19 @@ CREATE TABLE order_item (
 
 CREATE TABLE payment (
     payment_id    BIGSERIAL PRIMARY KEY,
+<<<<<<< Updated upstream
     order_id      BIGINT NOT NULL UNIQUE, -- 1:1 с заказом
+=======
+    order_id      BIGINT NOT NULL UNIQUE,             -- 1:1 к заказу (О9)
+    -- v4 (Z3 рецензента): контролируемая избыточность ради двух составных FK ниже —
+    -- тот же приём, что в order_item; значение всегда = ресторану заказа (FK №1)
+>>>>>>> Stashed changes
     restaurant_id BIGINT NOT NULL,
     amount        NUMERIC(10,2) NOT NULL CHECK (amount >= 0),
     method        payment_method NOT NULL,
     status        payment_status NOT NULL DEFAULT 'pending',
     paid_at       TIMESTAMPTZ,
+<<<<<<< Updated upstream
     CONSTRAINT chk_payment_paid_at CHECK (
         (status = 'pending' AND paid_at IS NULL) OR
         (status IN ('paid','refunded') AND paid_at IS NOT NULL)
@@ -201,6 +216,13 @@ CREATE TABLE payment (
     -- О24: выбранный способ оплаты должен приниматься рестораном
     FOREIGN KEY (restaurant_id, method)
         REFERENCES restaurant_payment_method(restaurant_id, method)
+=======
+    -- FK №1: оплата принадлежит заказу, и ресторан совпадает с рестораном заказа
+    FOREIGN KEY (order_id, restaurant_id) REFERENCES customer_order (order_id, restaurant_id) ON DELETE CASCADE,
+    -- FK №2: способ оплаты входит в принимаемые этим рестораном (О24 — декларативно;
+    -- RESTRICT не даст ресторану отключить способ оплаты, по которому уже есть платежи)
+    FOREIGN KEY (restaurant_id, method) REFERENCES restaurant_payment_method (restaurant_id, method)
+>>>>>>> Stashed changes
 );
 
 -- отзыв клиента о выполненном заказе: 0..1 к заказу (ФТ-12; v3, decisions.md №9).

@@ -1,18 +1,29 @@
 SET client_encoding TO 'UTF8';   -- файл в UTF-8; строка защищает от авто-WIN1252 на Windows
 -- =====================================================================
 -- SQL DML — запросы и транзакции   (проект «Перекус»)
+<<<<<<< Updated upstream
 -- Версия: v1.4 (проверено на PG 18.3/18.4 + seed.sql). Владелец: Роль 3.
+=======
+-- Версия: v1.4 (проверено на PG 18.4 + seed.sql). Владелец: Роль 3.
+>>>>>>> Stashed changes
 --   v1.2 (аудит 2026-06-10, одобрено командой): стражи в Q6 и T2,
 --     Q8 без отменённых заказов, честная инструкция по применению.
 --   v1.3 (решения команды 2026-06-10): Q13/Q14 под ФТ-12 (отзывы),
 --     T1 проверяет О24 (способ оплаты принимается рестораном).
+<<<<<<< Updated upstream
 --   v1.4 (финальная сборка 2026-06-12): T1 считает промокод, проверяет все
 --     запрошенные позиции и пишет payment.restaurant_id для декларативного О24.
+=======
+--   v1.4 (по замечаниям верификации 2-й моделью, раздел 14): T1 реализует
+--     промокод О19/О20 (Z2); Q4 не теряет заказы без позиций (Z5); Q15 —
+--     недостающий переход paid→cooking (Z4); страж оценки курьера в Q13 (Z9);
+--     зафиксирована семантика выручки в Q9 (Z7). О24 теперь держит FK (Z3).
+>>>>>>> Stashed changes
 -- Применение: выполнять запросы ВЫБОРОЧНО после schema.sql + seed.sql.
 --   Файл целиком через `psql -f dml.sql` НЕ пройдёт: :param — psql-плейсхолдеры,
 --   их нужно задавать через `psql -v name=value` (Q8–Q12, Q14 параметров не требуют).
 -- Для КАЖДОГО запроса: ФТ / Кто / Зачем.
--- Покрытие: 8 запросов CRUD (Q1–Q7, Q13) + 6 сложных (Q8–Q12, Q14) + 2 транзакции.
+-- Покрытие: 9 запросов CRUD (Q1–Q7, Q13, Q15) + 6 сложных (Q8–Q12, Q14) + 2 транзакции.
 -- =====================================================================
 
 -- #####################################################################
@@ -40,6 +51,7 @@ WHERE mi.restaurant_id = :rest AND mi.is_available
 ORDER BY mc.name, mi.name;
 
 -- --- Q4 (READ) История заказов клиента ------------------------------
+<<<<<<< Updated upstream
 -- ФТ-8 · клиент · список заказов со стоимостью позиций, оплатой и статусом
 SELECT o.order_id, o.created_at, r.name AS restaurant, o.status,
        SUM(oi.quantity * oi.unit_price) AS items_total_before_discount,
@@ -49,6 +61,16 @@ FROM customer_order o
 JOIN restaurant r  ON r.restaurant_id = o.restaurant_id
 JOIN order_item oi ON oi.order_id = o.order_id
 LEFT JOIN payment p ON p.order_id = o.order_id
+=======
+-- ФТ-8 · клиент · список заказов с суммой позиций (без скидки) и статусом
+-- [v1.4, Z5 рецензента] LEFT JOIN: заказ без позиций (например, created в
+-- момент оформления) не должен исчезать из истории клиента.
+SELECT o.order_id, o.created_at, r.name AS restaurant, o.status,
+       COALESCE(SUM(oi.quantity * oi.unit_price), 0) AS items_total
+FROM customer_order o
+JOIN restaurant r       ON r.restaurant_id = o.restaurant_id
+LEFT JOIN order_item oi ON oi.order_id = o.order_id
+>>>>>>> Stashed changes
 WHERE o.customer_id = :cust
 GROUP BY o.order_id, o.created_at, r.name, o.status, p.amount, p.status
 ORDER BY o.created_at DESC;
@@ -77,11 +99,21 @@ WHERE a.address_id = :addr
 -- ФТ-12 · клиент · оценить ресторан (обязательно) и курьера (опционально)
 -- [v1.3] стражи: только СВОЙ заказ (:cust) и только 'delivered' (О26);
 -- повторный отзыв отсечёт UNIQUE(order_id) (О25); оценки 1..5 держит CHECK (О27).
+-- [v1.4, Z9 рецензента] оценка курьера пишется только если курьер был назначен.
 INSERT INTO order_review (order_id, restaurant_rating, courier_rating, comment)
-SELECT o.order_id, :rest_rating, :cour_rating, :'comment'
+SELECT o.order_id, :rest_rating,
+       CASE WHEN o.courier_id IS NOT NULL THEN :cour_rating END,
+       :'comment'
 FROM customer_order o
 WHERE o.order_id = :order AND o.customer_id = :cust AND o.status = 'delivered'
 RETURNING review_id;
+
+-- --- Q15 (UPDATE) Ресторан принял заказ в готовку --------------------
+-- ФТ-6 · ресторан · переход paid → cooking жизненного цикла (О22)
+-- [v1.4, Z4 рецензента] этого перехода не было ни в одном запросе — заказ
+-- не мог штатно попасть в 'cooking'.
+UPDATE customer_order SET status = 'cooking'
+WHERE order_id = :order AND status = 'paid';
 
 
 -- #####################################################################
@@ -109,6 +141,10 @@ ORDER BY restaurant, rnk;
 
 -- --- Q9 Выручка по дням с нарастающим итогом (оконная) --------------
 -- ФТ-10 · ресторан/оператор · динамика и накопленная выручка
+-- [v1.4, Z7 рецензента] семантика зафиксирована: это ВАЛОВАЯ выручка по
+-- оплатам со статусом 'paid' НА МОМЕНТ снятия отчёта; возвращённые оплаты
+-- (refunded) исключаются целиком, поэтому отчёт за прошлые даты может
+-- меняться после возвратов. Net-выручка с датами возвратов — вне объёма.
 SELECT day, daily_revenue,
        SUM(daily_revenue) OVER (ORDER BY day) AS running_total
 FROM (
@@ -178,6 +214,7 @@ ORDER BY avg_rating DESC, restaurant;
 -- #####################################################################
 
 -- --- T1: Оформление и оплата заказа (атомарно) ----------------------
+<<<<<<< Updated upstream
 -- Объединяем: создание заказа + позиции со снимком цен + проверку промокода
 -- + оплату + перевод в 'paid'. Без транзакции: деньги списаны без заказа /
 -- заказ без позиций / частичная вставка / сумма не совпадает со скидкой.
@@ -196,6 +233,20 @@ VALUES (:item1, :q1), (:item2, :q2);
 
 INSERT INTO customer_order (customer_id, restaurant_id, address_id, promo_id, status)
 VALUES (:cust, :rest, :addr, NULLIF(:promo_id, 0), 'created')
+=======
+-- Объединяем: создание заказа + позиции со снимком цен + расчёт скидки по
+-- промокоду (О19/О20) + оплата + перевод в 'paid'.
+-- Без транзакции: деньги списаны без заказа / заказ без позиций / частичная вставка.
+-- Параметры (psql -v): cust, rest, addr, item1, q1, item2, q2, method,
+--   promo (id промокода или NULL).
+-- Принцип отката: при любом нарушении (пустой заказ О11, невалидный промокод
+-- О20) amount получается NULL → NOT NULL отбивает INSERT → вся транзакция
+-- откатывается; непринимаемый способ оплаты (О24) отбивает составной FK (v4).
+BEGIN;
+
+INSERT INTO customer_order (customer_id, restaurant_id, address_id, promo_id, status)
+VALUES (:cust, :rest, :addr, :promo, 'created')
+>>>>>>> Stashed changes
 RETURNING order_id \gset
 
 -- позиции: цена берётся из меню СЕЙЧАС и фиксируется как unit_price
@@ -205,6 +256,7 @@ FROM tmp_t1_items req
 JOIN menu_item mi ON mi.item_id = req.item_id
 WHERE mi.restaurant_id = :rest AND mi.is_available;
 
+<<<<<<< Updated upstream
 -- Если хотя бы одна позиция не вставилась (чужой ресторан / недоступно),
 -- промокод не найден/невалиден/сумма ниже минимума или метод оплаты не
 -- принимается рестораном, amount станет NULL и INSERT упадёт по NOT NULL.
@@ -258,6 +310,29 @@ calc AS (
 INSERT INTO payment (order_id, restaurant_id, amount, method, status, paid_at)
 SELECT :order_id, :rest, amount, :'method'::payment_method, 'paid', now()
 FROM calc;
+=======
+-- [v1.4, Z2 рецензента] оплата = Σ позиций − скидка по промокоду (О19);
+-- промокод применяется, только если действует по датам и сумма ≥ min_order_amount
+-- (О20) — иначе d.discount IS NULL и CASE отдаёт NULL → откат всей транзакции.
+INSERT INTO payment (order_id, restaurant_id, amount, method, status, paid_at)
+SELECT :order_id, :rest,
+       CASE WHEN :promo::bigint IS NULL OR d.discount IS NOT NULL
+            THEN s.total - COALESCE(d.discount, 0)
+       END,
+       :'method'::payment_method, 'paid', now()
+FROM (SELECT SUM(oi.quantity * oi.unit_price) AS total          -- NULL, если позиций нет (О11)
+      FROM order_item oi WHERE oi.order_id = :order_id) s
+LEFT JOIN LATERAL (
+    SELECT LEAST(s.total, CASE pc.discount_type                  -- скидка не больше суммы
+               WHEN 'fixed'   THEN pc.discount_value
+               WHEN 'percent' THEN ROUND(s.total * pc.discount_value / 100.0, 2)
+           END) AS discount
+    FROM promo_code pc
+    WHERE pc.promo_id = :promo
+      AND CURRENT_DATE BETWEEN pc.valid_from AND pc.valid_to     -- О20: срок действия
+      AND s.total >= pc.min_order_amount                         -- О20: минимальная сумма
+) d ON true;
+>>>>>>> Stashed changes
 
 UPDATE customer_order
 SET status = 'paid',
