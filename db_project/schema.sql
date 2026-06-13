@@ -154,8 +154,7 @@ CREATE TABLE customer_order (
     -- адрес доставки принадлежит клиенту ЭТОГО заказа (О13, v3 — декларативно;
     -- закрывает дыру из аудита 2026-06-10: раньше проходил адрес чужого клиента)
     FOREIGN KEY (address_id, customer_id) REFERENCES address (address_id, customer_id),
-<<<<<<< Updated upstream
-    -- базовые внутристрочные инварианты времени и жизненного цикла (v4)
+    -- v4 (Z4 рецензента): порядок меток времени и согласованность статусов с метками (О22/О23)
     CONSTRAINT chk_order_time_flow CHECK (
         (paid_at IS NULL OR paid_at >= created_at) AND
         (delivered_at IS NULL OR (paid_at IS NOT NULL AND delivered_at >= paid_at))
@@ -169,13 +168,6 @@ CREATE TABLE customer_order (
     CONSTRAINT chk_order_courier_status CHECK (
         courier_id IS NULL OR status IN ('paid','cooking','on_the_way','delivered')
     )
-=======
-    -- v4 (Z4 рецензента): порядок времени и согласованность статусов с метками (О22/О23)
-    CHECK (paid_at IS NULL OR paid_at >= created_at),
-    CHECK (delivered_at IS NULL OR (paid_at IS NOT NULL AND delivered_at >= paid_at)),
-    CHECK (status <> 'paid'      OR paid_at      IS NOT NULL),
-    CHECK (status <> 'delivered' OR delivered_at IS NOT NULL)
->>>>>>> Stashed changes
 );
 
 CREATE TABLE order_item (
@@ -187,42 +179,33 @@ CREATE TABLE order_item (
     PRIMARY KEY (order_id, item_id),
     -- позиция принадлежит этому заказу:
     FOREIGN KEY (order_id, restaurant_id) REFERENCES customer_order(order_id, restaurant_id) ON DELETE CASCADE,
-    -- ...и блюдо — из ресторана этого заказа (декларативно реализует ограничение №2 из раздела 6):
+    -- ...и блюдо — из ресторана этого заказа (декларативно реализует ограничение О12 из раздела 6):
     FOREIGN KEY (item_id, restaurant_id)  REFERENCES menu_item(item_id, restaurant_id)
 );
 
 CREATE TABLE payment (
     payment_id    BIGSERIAL PRIMARY KEY,
-<<<<<<< Updated upstream
-    order_id      BIGINT NOT NULL UNIQUE, -- 1:1 с заказом
-=======
     order_id      BIGINT NOT NULL UNIQUE,             -- 1:1 к заказу (О9)
     -- v4 (Z3 рецензента): контролируемая избыточность ради двух составных FK ниже —
     -- тот же приём, что в order_item; значение всегда = ресторану заказа (FK №1)
->>>>>>> Stashed changes
     restaurant_id BIGINT NOT NULL,
     amount        NUMERIC(10,2) NOT NULL CHECK (amount >= 0),
     method        payment_method NOT NULL,
     status        payment_status NOT NULL DEFAULT 'pending',
     paid_at       TIMESTAMPTZ,
-<<<<<<< Updated upstream
+    -- статус оплаты согласован с меткой времени: pending ⇔ нет paid_at, paid/refunded ⇔ есть
     CONSTRAINT chk_payment_paid_at CHECK (
         (status = 'pending' AND paid_at IS NULL) OR
         (status IN ('paid','refunded') AND paid_at IS NOT NULL)
     ),
-    -- оплата относится к тому же ресторану, что и заказ
+    -- FK №1: оплата принадлежит заказу, и ресторан совпадает с рестораном заказа
     FOREIGN KEY (order_id, restaurant_id)
         REFERENCES customer_order(order_id, restaurant_id) ON DELETE CASCADE,
-    -- О24: выбранный способ оплаты должен приниматься рестораном
+    -- FK №2 (О24): выбранный способ оплаты входит в принимаемые этим рестораном
+    -- (декларативно, в т.ч. при записи в обход T1; RESTRICT защищает от отключения
+    --  способа оплаты, по которому уже есть платежи)
     FOREIGN KEY (restaurant_id, method)
         REFERENCES restaurant_payment_method(restaurant_id, method)
-=======
-    -- FK №1: оплата принадлежит заказу, и ресторан совпадает с рестораном заказа
-    FOREIGN KEY (order_id, restaurant_id) REFERENCES customer_order (order_id, restaurant_id) ON DELETE CASCADE,
-    -- FK №2: способ оплаты входит в принимаемые этим рестораном (О24 — декларативно;
-    -- RESTRICT не даст ресторану отключить способ оплаты, по которому уже есть платежи)
-    FOREIGN KEY (restaurant_id, method) REFERENCES restaurant_payment_method (restaurant_id, method)
->>>>>>> Stashed changes
 );
 
 -- отзыв клиента о выполненном заказе: 0..1 к заказу (ФТ-12; v3, decisions.md №9).
@@ -243,8 +226,10 @@ CREATE INDEX idx_order_customer    ON customer_order (customer_id);
 CREATE INDEX idx_order_restaurant  ON customer_order (restaurant_id);
 CREATE INDEX idx_order_courier     ON customer_order (courier_id);
 CREATE INDEX idx_order_created     ON customer_order (created_at);
-CREATE INDEX idx_order_status_rest ON customer_order (status, restaurant_id);
 CREATE INDEX idx_orderitem_item    ON order_item (item_id);
 CREATE INDEX idx_menuitem_rest_cat ON menu_item (restaurant_id, category_id);
 CREATE INDEX idx_address_customer  ON address (customer_id);
-CREATE INDEX idx_payment_status_paid ON payment (status, paid_at);
+-- Частичный индекс под Q12 (доля отмен): статус низкоселективен — обычный индекс
+-- по нему планировщик игнорирует (Seq Scan), а частичный по редкому 'cancelled'
+-- мал и реально ускоряет фильтр (по замечанию Z10 рецензии, раздел 14 / НФТ).
+CREATE INDEX idx_order_cancelled   ON customer_order (restaurant_id) WHERE status = 'cancelled';

@@ -116,29 +116,17 @@ INSERT INTO order_item (order_id, item_id, restaurant_id, quantity, unit_price) 
  (8, 5,2,1,480.00),(8, 8,2,1,390.00),
  (9, 3,1,2,700.00);
 
-<<<<<<< Updated upstream
--- 10. Оплаты (1:1 к заказу; restaurant_id нужен для декларативной проверки О24)
-INSERT INTO payment (payment_id, order_id, restaurant_id, amount, method, status, paid_at) VALUES
- (1,1,1,1620.00,'card','paid',    '2026-06-01 12:05'),
- (2,2,1,1920.00,'sbp', 'paid',    '2026-06-01 13:05'),  -- 2120 - 200 (WELCOME200)
- (3,3,2, 999.00,'card','paid',    '2026-06-02 19:03'),  -- 1110 - 10% (SUSHI10)
-=======
 -- 10. Оплаты (1:1 к заказу; суммы согласованы с позициями и скидками;
 --     restaurant_id = ресторану заказа, method ∈ принимаемых рестораном — v4, О24)
 INSERT INTO payment (payment_id, order_id, restaurant_id, amount, method, status, paid_at) VALUES
  (1,1,1,1620.00,'card','paid',    '2026-06-01 12:05'),
  (2,2,1,1920.00,'sbp', 'paid',    '2026-06-01 13:05'),  -- 2120 − 200 (WELCOME200)
  (3,3,2, 999.00,'card','paid',    '2026-06-02 19:03'),  -- 1110 − 10% (SUSHI10)
->>>>>>> Stashed changes
  (4,4,2,1740.00,'cash','paid',    '2026-06-02 20:04'),
  (5,5,3,1000.00,'card','paid',    '2026-06-03 14:02'),
  (6,6,3, 950.00,'sbp', 'paid',    '2026-06-03 18:33'),
  (7,7,1,1750.00,'card','paid',    '2026-06-04 12:33'),
-<<<<<<< Updated upstream
- (8,8,2, 870.00,'card','refunded','2026-06-04 21:02'),  -- отменён -> возврат
-=======
  (8,8,2, 870.00,'card','refunded','2026-06-04 21:02'),  -- отменён → возврат
->>>>>>> Stashed changes
  (9,9,1,1400.00,'card','paid',    '2026-06-05 11:02');
 
 -- 10b. Отзывы (ФТ-12): только на ДОСТАВЛЕННЫЕ заказы, created_at >= delivered_at;

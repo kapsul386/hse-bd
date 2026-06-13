@@ -153,18 +153,6 @@ Table order_item {
 }
 
 Table payment {
-<<<<<<< Updated upstream
-  payment_id bigint [pk, increment]
-  order_id   bigint [not null, unique]
-  restaurant_id bigint [not null, note: 'для составных FK: заказ того же ресторана + О24']
-  amount     decimal(10,2) [not null]
-  method     payment_method [not null]
-  status     payment_status [not null, default: 'pending']
-  paid_at    timestamptz
-  indexes {
-    (status, paid_at)
-  }
-=======
   payment_id    bigint [pk, increment]
   order_id      bigint [not null, unique]
   restaurant_id bigint [not null, note: 'v4: ради составных FK — ресторан заказа; способ оплаты ∈ принимаемых (О24)']
@@ -172,7 +160,6 @@ Table payment {
   method        payment_method [not null]
   status        payment_status [not null, default: 'pending']
   paid_at       timestamptz
->>>>>>> Stashed changes
 }
 
 Table order_review {
@@ -198,15 +185,9 @@ Ref: customer_order.restaurant_id > restaurant.restaurant_id
 Ref: customer_order.(address_id, customer_id) > address.(address_id, customer_id) // адрес — клиента заказа (О13)
 Ref: customer_order.courier_id > courier.courier_id
 Ref: customer_order.promo_id > promo_code.promo_id
-<<<<<<< Updated upstream
-Ref: payment.(order_id, restaurant_id) > customer_order.(order_id, restaurant_id) // 1:1 + ресторан заказа
-Ref: payment.(restaurant_id, method) > restaurant_payment_method.(restaurant_id, method) // v4: О24
-Ref: order_review.order_id - customer_order.order_id // 0..1 отзыв
-=======
-Ref: payment.(order_id, restaurant_id) > customer_order.(order_id, restaurant_id) // v4: оплата своего заказа
+Ref: payment.(order_id, restaurant_id) > customer_order.(order_id, restaurant_id) // v4: оплата своего заказа (1:1)
 Ref: payment.(restaurant_id, method) > restaurant_payment_method.(restaurant_id, method) // v4: О24 декларативно
 Ref: order_review.order_id - customer_order.order_id // 0..1 отзыв (v3)
->>>>>>> Stashed changes
 Ref: order_item.(order_id, restaurant_id) > customer_order.(order_id, restaurant_id)
 Ref: order_item.(item_id, restaurant_id) > menu_item.(item_id, restaurant_id)
 

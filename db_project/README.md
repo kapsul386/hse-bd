@@ -43,4 +43,4 @@ docker compose exec db psql -U perekus -d perekus   # консоль для за
 
 Вариант B — локальный PostgreSQL: `psql -d perekus -f schema.sql` → `-f seed.sql`.
 
-Запросы из `dml.sql` выполняются **выборочно** (Q1–Q7, Q13 и T1/T2 содержат `:param`-плейсхолдеры — задавать через `psql -v name=value`; Q8–Q12 и Q14 запускаются как есть).
+Запросы из `dml.sql` выполняются **выборочно** (Q1–Q7, Q13, Q15 и T1/T2 содержат `:param`-плейсхолдеры — задавать через `psql -v name=value`; Q8–Q12 и Q14 запускаются как есть).
